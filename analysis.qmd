@@ -1,0 +1,819 @@
+---
+title: "analysis"
+format:
+  html:
+    embed-resources: true
+execute:
+  cache: true
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+### Load packages and setup file reading
+
+```{r, warning = FALSE, error = FALSE, message = FALSE, cache = FALSE}
+
+
+library(tidyverse)
+library(here)
+library(lme4)
+library(readxl)
+library(boot)
+
+source("gtheory-icc.R")
+
+
+# Define  column names
+standard_cols <- c("participant", "t1", "t2", "difference")
+
+# file paths
+file_path <- here::here("data", "controls_allstories_alltimes_rc.xlsx")
+file_path_pwa = here::here("data", "pwa_allstories_alltimes.xlsx")
+
+# read in data and set column names
+read_data <- function(file_path, sheet_name) {
+  df <- read_excel(file_path, sheet = sheet_name)
+  names(df) <- standard_cols
+  return(df)
+}
+
+# read in control data
+control_data <- excel_sheets(file_path) %>%
+  set_names() %>%
+  map_dfr(~ read_data(file_path, .x), .id = "sheet_name") |> 
+  mutate(dx = "control")
+
+# read in aphasia data
+pwa_data <- excel_sheets(file_path_pwa) %>%
+  set_names() %>%
+  map_dfr(~ read_data(file_path_pwa, .x), .id = "sheet_name") |> 
+  mutate(dx = "pwa")
+
+```
+
+Data Cleaning
+
+```{r}
+
+all_data = bind_rows(control_data, pwa_data) |> 
+  select(-difference) |> 
+  pivot_longer(cols = starts_with("t"), 
+               names_to = "time", 
+               values_to = "score") |> 
+  rename(stimuli = sheet_name) |> 
+  mutate(across(where(is.character), as.factor),
+         participant = as.factor(paste0("p", str_extract(participant, "^[^.]*")))) |> 
+  mutate(max = case_when(
+    stimuli == "Cat" ~ 35,
+    stimuli == "Cinderella" ~ 95,
+    stimuli == "Sandwich" ~ 25,
+    stimuli == "Umbrella" ~ 36,
+    stimuli == "Window" ~ 24,
+    TRUE ~ NA
+  )) |> 
+  mutate(percent_acc = score/max)
+
+knitr::kable(head(all_data))
+```
+
+Visualize test-retest
+
+```{r, fig.height = 6, fig.width = 8.5}
+all_wide = all_data |> select(-score) |> 
+  pivot_wider(names_from = time, values_from = percent_acc) 
+
+p1 = all_wide |> 
+  mutate(dx = ifelse(dx == "control", "Healthy Control", "Individuals with Aphasia")) |> 
+  ggplot(aes(x = t1, y = t2, fill = dx)) +
+  #geom_point() + 
+  geom_jitter(alpha = 0.8, size = 2, shape = 21, color = "lightgrey", width = .015, height = 0.015) +
+  geom_abline(alpha = 0.6) + 
+  facet_wrap(~stimuli, ncol = 3) + 
+  scale_y_continuous(limits = c(-0.05, 1.05), labels = scales::label_percent(), breaks = seq(0, 1, 0.25)) + 
+  scale_x_continuous(limits = c(-0.05, 1.05), labels = scales::label_percent(), breaks = seq(0, 1, 0.25)) +
+  theme_bw(base_size = 14) + 
+  theme(legend.position = "bottom", aspect.ratio = 1) +
+  labs(fill = "", x = "Percent of Checklist Produced, Time 1", y = "Percent of Checklist Produced, Time 2") +
+  coord_fixed()
+
+ggsave(plot = p1, here::here("output" , "figure 1.png"), height = 7, width = 9)
+
+p1
+```
+
+## Estimating reliability under a G-theory framework
+
+-   For single rater, dependability coefficient is equivalent to
+    $ICC_{A,1}$
+
+-   For single rater generalizability coefficient is equivalent to
+    $ICC_{C,1}$
+
+```{r}
+calc_icc <- function(model) {
+  vc <- VarCorr(model)
+  s_participant <- as.numeric(vc$participant[1])
+  s_residual <- sigma(model)^2
+  
+  icc <- s_participant / (s_participant + s_residual)
+  return(icc)
+}
+
+calc_icc2 <- function(model) {
+  vc <- VarCorr(model)
+  s_participant <- as.numeric(vc$participant[1])
+  s_time <- as.numeric(vc$time[1])
+  s_residual <- sigma(model)^2
+  
+  #print(s_time)
+  
+  icc <- s_participant / (s_participant + s_time + s_residual)
+  return(icc)
+}
+
+m0 <- lmer(score ~ 1 + (1|participant), data = all_data |> filter(dx == "control", stimuli == "Cat"))
+m1 <- lmer(score ~ 1 + (1|participant) + (1|time), data = all_data |> filter(dx == "control", stimuli == "Cat"))
+calc_icc(m0)
+calc_icc2(m1)
+
+# can't actualy estimate the time portion of the variance
+VarCorr(m1)$time[1]
+```
+
+What we can do though, is include time as a fixed effect, which would
+give us the 'consistency' ICC instead of agreement, by removing any
+systematic bias from the estimation of the ICC in the first place.
+There's effectively no difference between these parameters, indicating
+that there's very little evidence of test effects.
+
+```{r}
+m2 <- lmer(score ~ 1 + time + (1|participant), data = all_data |> filter(dx == "control", stimuli == "Cat"))
+calc_icc(m2)
+calc_icc(m0) # agreement ICC
+```
+
+We can examine the raw data and time fixed effects to verify this
+
+```{r}
+all_data |> filter(dx == "control", stimuli == "Cat") |> 
+  group_by(time) |> 
+  summarize(mean_score = mean(score))
+
+parameters::model_parameters(m2, effects = "fixed")
+```
+
+```{r}
+
+```
+
+Ok lets modify the function to bootstrap the 95% CI by resampling
+participants. I wrote a function that takes the formula of the lme4
+model, the facet of interest, the data to calculate this. it also takes
+R = the number of bootstrap iterations and decimal = the number of
+decimal places in the results tables. These last two arguments are
+optional, they default to 1000 and 2. The function returns 3 tables.
+
+-   table of ICC and 95% CI
+-   table of variance percentages for each facet (random effect)
+-   table of warnigns from the bootstrap models, which can indicate
+    problems with the models
+
+```{r}
+cat_control <- all_data |> filter(dx == "control", stimuli == "Cat")
+
+cat_icc = calc_icc_formula(
+  formula = score ~ 1 + (1|participant) + (1|time),
+  icc_facet = "participant",
+  data = cat_control,
+  R = 250,
+  decimal = 2
+)
+
+cat_icc
+```
+
+the `(1|time)` term here is the problematic one (as noted above) - but
+just giving this as an example.
+
+```{r, cache = TRUE}
+# Run ICC analysis on all stimuli / dx
+icc_A1 <- all_data |>
+  group_nest(stimuli, dx) |>
+  mutate(
+    icc_results = map(data, ~calc_icc_formula(score ~ 1 + (1|participant), "participant", .x, R = 1000))
+  )
+
+# Extract ICC results table
+icc_table <- icc_A1 |>
+  mutate(icc_data = map(icc_results, "icc_results")) |>
+  select(stimuli, dx, icc_data) |>
+  unnest(icc_data)
+
+# Extract variance components table  
+variance_table <- icc_A1 |>
+  mutate(var_data = map(icc_results, "variance_components")) |>
+  select(stimuli, dx, var_data) |>
+  unnest(var_data)
+
+knitr::kable(icc_table |> select(-ci_lower, -ci_upper))
+```
+
+Check that the results are basically the same as classical test theory:
+
+```{r}
+
+icc_results <- all_data %>%
+  group_by(stimuli, dx) %>%
+  summarise(
+    n = n_distinct(participant),
+    icc_data = list({
+      wide_data <- cur_data() %>%
+        select(participant, time, score) %>%
+        pivot_wider(names_from = time, values_from = score) %>%
+        select(-participant)
+      
+      icc_result <- irr::icc(wide_data, model = "two", type = "agreement", unit = "single")
+      
+      tibble(
+        icc = icc_result$value,
+        lower_ci = icc_result$lbound,
+        upper_ci = icc_result$ubound
+      )
+    })
+  ) %>%
+  unnest(icc_data)
+
+a = icc_table |> select(stimuli, dx, icc, ci_lower, ci_upper) |> mutate(method = "gtheory", icc = icc/100)
+b = icc_results |> select(stimuli, dx, icc, ci_lower = lower_ci, ci_upper = upper_ci) |> mutate(method = "irr")
+bind_rows(a, b) |> 
+  ggplot(aes(x = stimuli, color = method, y = icc)) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                position = position_dodge(width = 0.5),
+                width = 0.3) +
+  geom_point(position = position_dodge(width = 0.5)) + 
+  facet_wrap(~dx, ncol = 1)
+```
+
+They are very similar. It is interesting that the bootstrapped gtheory
+based method is more affected by range restriction - the 95% CIs are
+wider. I think this is actually a good thing - the method is
+appropriately representing that there is more uncertainty in the ICC
+when there is less variability in the range of scores. It's also even
+mroe evidence that some of our stimuli are just too short. This isn't
+really a difference between CTT and Gtheory, it's mostly a difference in
+the statistical estimation methods.
+
+Lets also get consistency ICCs for situations where absolute agreement
+is not necessary, as recommended by tenHove
+
+```{r}
+# Run ICC analysis on all stimuli / dx
+icc_C1 <- all_data |>
+  group_nest(stimuli, dx) |>
+  mutate(
+    icc_results = map(data, ~calc_icc_formula(score ~ 1 + time + (1|participant), "participant", .x, R = 1000))
+  )
+
+# Extract ICC results table
+icc_table_c <- icc_C1 |>
+  mutate(icc_data = map(icc_results, "icc_results")) |>
+  select(stimuli, dx, icc_data) |>
+  unnest(icc_data)
+
+# Extract variance components table  
+variance_table_c <- icc_C1 |>
+  mutate(var_data = map(icc_results, "variance_components")) |>
+  select(stimuli, dx, var_data) |>
+  unnest(var_data)
+
+knitr::kable(icc_table_c |> select(-ci_lower, -ci_upper))
+```
+
+We can do a similar comparison, here between consistency and agreement.
+No major test effects.
+
+```{r}
+a = icc_table |> select(stimuli, dx, icc, ci_lower, ci_upper) |> mutate(method = "agreement", icc = icc/100)
+b = icc_table_c |> select(stimuli, dx, icc, ci_lower, ci_upper) |> mutate(method = "consistency", icc = icc/100)
+bind_rows(a, b) |> 
+  ggplot(aes(x = stimuli, color = method, y = icc)) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper),
+                position = position_dodge(width = 0.5),
+                width = 0.3) +
+  geom_point(position = position_dodge(width = 0.5)) + 
+  facet_wrap(~dx, ncol = 1)
+```
+
+## Overall effects including all stimuli
+
+Now we can look at ICC/g-coefficient as if stimuli were facets
+
+```{r}
+
+# first we have to standardize the scores. I've done this by calculating % 
+# accuracy using the max possible scores. this normalizes the scores accounting
+# for stimuli length. 
+
+icc_5 = calc_icc_formula(
+  formula = percent_acc ~ 1 + (1|participant) + (1|stimuli) + (1|stimuli:participant),
+  icc_facet = "participant",
+  data = all_data,
+  R = 1000
+)
+
+icc_5_dx = calc_icc_formula(
+  formula = percent_acc ~ 1 + dx + (1|participant) + (1|stimuli)+ (1|stimuli:participant),
+  icc_facet = "participant",
+  data = all_data,
+  R = 1000
+)
+
+```
+
+Lets look at how including dx as a fixed effect impacts ICC. There's a
+non-trivial drop in ICC, which suggests that dx has an impact on
+reliability. This actually works against my intial thinking that we
+could consider the groups to be from a single latent distribution, and
+that it makes sense to examine ICCs separately. Some of the different in
+ICC is likely due to range restriction, but its not clear that we could
+apply the good ICCs for pwa to inform ICCs overall.
+
+```{r}
+knitr::kable(bind_rows(icc_5$icc_results |> mutate(method = "collapsed") |> select(-ci_upper, -ci_lower),
+                       icc_5_dx$icc_results |> mutate(method = "dx-removed") |> select(-ci_upper, -ci_lower)
+                       ))
+```
+
+The other interesting thing here is that (at least on % accuracy terms)
+there is very little variation in the mean % accuracy across stimuli.
+Perhaps this would be expected based on how the core-lex lists were
+developed. However, the stimuli:participant interaction holds 7.3% of
+the overall variance. This would indicate that some some participants do
+better in some stimuli than others. we could attribute this to things
+like stimuli salience the participant, or whether perhaps the type of
+language elicitied by some stimuli works better for some aphasia
+profiles than others. It's not a massive percentage, but it's not
+nothing either. This is theoretically the same idea as an internal
+consistency measure (though perhaps a bit more rigorous), in that it is
+using multiple measurement occasions. This suggests that the internal
+consistency for core lex across stimli is reasonably good, but not
+great.
+
+P.S. the overall accuracy for core lex is pretty good too (\~0.8)
+
+```{r}
+pwa = all_data |> filter(dx == "pwa")
+
+icc_5_pwa = calc_icc_formula(
+  formula = percent_acc ~ 1 + (1|participant) + (1|stimuli) + (1|stimuli:participant),
+  icc_facet = "participant",
+  data = pwa,
+  R = 1000
+)
+
+icc_5_pwa
+```
+
+```{r}
+control = all_data |> filter(dx == "control")
+
+icc_5_control = calc_icc_formula(
+  formula = percent_acc ~ 1 + (1|participant) + (1|stimuli) + (1|stimuli:participant),
+  icc_facet = "participant",
+  data = control,
+  R = 1000
+)
+
+icc_5_control
+```
+
+## Decision study
+
+-   what would be the effects of averaging 1...5 stimuli on reliability?
+
+```{r}
+
+m_pwa = lmer(percent_acc ~ 1 + (1|participant) + (1|stimuli) + (1|stimuli:participant), data = pwa)
+m_control = lmer(percent_acc ~ 1 + (1|participant) + (1|stimuli) + (1|stimuli:participant), data = control)
+# Usage:
+decision_pwa <- calc_decision_study(m_pwa)  # whatever your model object is called
+decision_pwa 
+decision_control <- calc_decision_study(m_control)
+decision_control
+
+ds = bind_rows(decision_pwa |> mutate(group = "pwa"), decision_control |> mutate(group = "control"))
+ds
+```
+
+```{r}
+ds |> 
+  ggplot(aes(x = n_stimuli, y = g_coefficient, color = group)) +
+  geom_point( position = position_dodge(0.3)) + 
+  geom_errorbar(aes(ymin=ci_lower, ymax = ci_upper), width = 0.3, position = position_dodge(0.3))
+```
+
+## MDC
+
+Ok finally lets calculate the minimum detectable change for our
+clinician friends. I wrote a similar function to do this. first, we'll
+do it for each stimuli specifically. this would be if you were going to
+use the same stimuli before and after some intervention.
+
+```{r}
+# Run ICC analysis on all stimuli / dx
+mdc <- all_data |>
+  group_nest(stimuli, dx) |>
+  mutate(
+    mdc_results = map(data, ~calc_mdc_formula(score ~ 1 + (1|participant), icc_facet = "participant", .x))
+  )
+
+# Extract ICC results table
+mdc_all <- mdc |>
+  mutate(mdc_data = map(mdc_results, "mdc_results")) |>
+  select(stimuli, dx, mdc_data) |>
+  unnest(mdc_data)
+
+knitr::kable(mdc_all)
+
+```
+
+Might be useful to look at the % of max possible score for these:
+
+```{r}
+mdc_all |> left_join(all_data |>  distinct(stimuli, dx, max),
+                     by = c("stimuli", "dx")) |>
+            mutate(percent_of_total = scales::label_percent(0.01)(mdc/max)) |> 
+  select(stimuli, dx, percent_of_total)
+```
+
+We can get the MDC also if a clinician were to administer a stimuli at
+random at the start of treatment and another selected at random at the
+end of treatment (assuming they are not the same stimuli). In this
+method, we account for the fact that error could come from the stimuli,
+the participant:stimuli interaction, and residual error, to account for
+the fact that some participants just do better or worse on some stimuli
+than others. And if developed new core lex stimuli that were reasonably
+stimilar to the ones here, developed with the same process, it would be
+reasonable to think that this would apply to these too. By the way -
+these MDC are in %accuracy scale, not a number of items scale, because
+we need to normalize them before we can compare them (just as a
+clinician might, to account for sample length).
+
+```{r}
+# Run ICC analysis on all stimuli / dx
+mdc_5 <- all_data |>
+  group_nest(dx) |>
+  mutate(
+    mdc_results = map(data, ~calc_mdc_formula(percent_acc ~ 1 + (1|participant) +
+                                                (1|stimuli) + (1|stimuli:participant),
+                                              error_type = "non_icc",
+                                              icc_facet = "participant", .x))
+  )
+
+# Extract ICC results table
+mdc_all_5 <- mdc_5 |>
+  mutate(mdc_data = map(mdc_results, "mdc_results")) |>
+  select(dx, mdc_data) |>
+  unnest(mdc_data)
+
+knitr::kable(mdc_all_5)
+
+```
+
+## Summary
+
+-   PWA ICCs good
+-   Control ICCs less good
+-   Weak evidence of collabsability when estimating the ICC, but an
+    argument could probably be made that when you're looking at a
+    general group of people with and without aphasia, core lex is ok for
+    everyone. This is one of the benefits of g-theory. It's not just
+    about a statistic, it's about matching the way you evaluate error to
+    the context you want to generalize to.
+-   Perhaps we should look at whether the pwa ICC is similar if we only
+    look in the range of scores as the controls (I bet it would be), but
+    I'm not sure this is necessary
+-   there are basically zero differences between agreement and
+    consistency, indicating no test-retest effects / practice effects.
+    fantastic. this holds across all stimuli. So it doesn't really
+    matter what your future use case would be for core lex, (whether it
+    would require absolte reliability, or just consistency in the
+    rankings would be sufficient), both are relatively good.
+-   ICCs are consistent across stimuli for individuals with aphasia, but
+    longer stimuli still looks important - the ICC for cinderella is
+    very high for pwa and even good for controls. this suggests
+    something about tests eliciting behavior at a wide range of
+    difficulty and with a wider possibility for different response
+    patterns. more evidence that some of the simplistic old school
+    stimuli continue to fall short.
+-   MDCs are in the range of 20% of the total possible score for each
+    stimuli, much smaller for cinderella of course. This would be a
+    pretty big improvement. Maybe we coudl speculate a little on what
+    kinds of treatment mechanisms might engender such a change? or maybe
+    that's out of scope. something something item specific domain
+    general...
+-   overall MDC if you want to hot swap stimuli is a bit bigger, and I'm
+    not sure if it's useful at this scale. would be nice to know the
+    range of realistic effect sizes...has anyone used this in a
+    treatment study with an n\> 10 yet?
+
+Results Text:
+
+# Results
+
+## Participant Characteristics
+
+\[Placeholder paragraph for demographic information including
+participant counts, age ranges, education levels, aphasia severity
+measures, and other relevant descriptive statistics\]
+
+## Test-Retest Reliability Within Individual Stimuli
+
+To examine the stability of core lexicon scores within each stimulus
+type, we calculated generalizability coefficients using the formula
+σ²participant / (σ²participant + σ²residual) for individuals with
+aphasia and healthy controls separately. This analysis aimed to
+determine the reliability of each stimulus when used consistently across
+testing sessions.
+
+Results revealed substantial differences in reliability between groups
+and across stimuli. For individuals with aphasia, coefficients ranged
+from `r round(min(icc_table |> filter(dx == "pwa") |> pull(icc)), 2)` to
+`r round(max(icc_table |> filter(dx == "pwa") |> pull(icc)), 2)`, with
+all stimuli demonstrating good to excellent reliability according to
+established guidelines **Source citation needed for reliability
+guidelines**. The
+`r icc_table |> filter(dx == "pwa") |> slice_max(icc) |> pull(stimuli)`
+stimulus showed the highest reliability (G =
+`r icc_table |> filter(dx == "pwa") |> slice_max(icc) |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "pwa") |> slice_max(icc) |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "pwa") |> slice_max(icc) |> pull(ci_upper) |> round(2)`\]),
+followed by
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(2) |> pull(stimuli)`
+(G =
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(2) |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(2) |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(2) |> pull(ci_upper) |> round(2)`\]),
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(3) |> pull(stimuli)`
+(G =
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(3) |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(3) |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(3) |> pull(ci_upper) |> round(2)`\]),
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(4) |> pull(stimuli)`
+(G =
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(4) |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(4) |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(4) |> pull(ci_upper) |> round(2)`\]),
+and
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(5) |> pull(stimuli)`
+(G =
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(5) |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(5) |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "pwa") |> arrange(desc(icc)) |> slice(5) |> pull(ci_upper) |> round(2)`\]).
+
+In contrast, healthy controls showed more variable reliability across
+stimuli, with ICCs ranging from
+`r round(min(icc_table |> filter(dx == "control") |> pull(icc)), 2)` to
+`r round(max(icc_table |> filter(dx == "control") |> pull(icc)), 2)`.
+The
+`r icc_table |> filter(dx == "control") |> slice_max(icc) |> pull(stimuli)`
+stimulus again demonstrated the highest reliability (G =
+`r icc_table |> filter(dx == "control") |> slice_max(icc) |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "control") |> slice_max(icc) |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "control") |> slice_max(icc) |> pull(ci_upper) |> round(2)`\]),
+while
+`r icc_table |> filter(dx == "control") |> slice_min(icc) |> pull(stimuli)`
+showed the poorest reliability (G =
+`r icc_table |> filter(dx == "control") |> slice_min(icc) |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "control") |> slice_min(icc) |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "control") |> slice_min(icc) |> pull(ci_upper) |> round(2)`\]).
+The remaining stimuli showed moderate reliability:
+`r icc_table |> filter(dx == "control", stimuli == "Cat") |> pull(stimuli)`
+(G =
+`r icc_table |> filter(dx == "control", stimuli == "Cat") |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "control", stimuli == "Cat") |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "control", stimuli == "Cat") |> pull(ci_upper) |> round(2)`\]),
+`r icc_table |> filter(dx == "control", stimuli == "Sandwich") |> pull(stimuli)`
+(G =
+`r icc_table |> filter(dx == "control", stimuli == "Sandwich") |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "control", stimuli == "Sandwich") |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "control", stimuli == "Sandwich") |> pull(ci_upper) |> round(2)`\]),
+and
+`r icc_table |> filter(dx == "control", stimuli == "Window") |> pull(stimuli)`
+(G =
+`r icc_table |> filter(dx == "control", stimuli == "Window") |> pull(icc) |> round(2)`,
+95% CI
+\[`r icc_table |> filter(dx == "control", stimuli == "Window") |> pull(ci_lower) |> round(2)`,
+`r icc_table |> filter(dx == "control", stimuli == "Window") |> pull(ci_upper) |> round(2)`\]).
+
+## Agreement Versus Consistency Reliability
+
+To examine potential systematic bias between testing sessions, we
+compared agreement ICCs (which penalize systematic differences between
+timepoints) with consistency ICCs (which control for systematic bias by
+including time as a fixed effect). This analysis aimed to detect any
+practice effects or systematic changes in performance across sessions.
+
+The comparison revealed minimal differences between agreement and
+consistency estimates across all stimuli and groups. For individuals
+with aphasia, consistency ICCs were nearly identical to agreement ICCs
+(maximum difference =
+`r round(max(abs(icc_table$icc - icc_table_c$icc)), 3)`), indicating no
+systematic practice effects. Similarly, for healthy controls,
+consistency ICCs differed from agreement ICCs by less than
+`r round(max(abs((icc_table |> filter(dx == "control") |> pull(icc)) - (icc_table_c |> filter(dx == "control") |> pull(icc)))), 2)`
+across all stimuli. These findings suggest that core lexicon performance
+is stable across sessions without meaningful practice effects.
+
+# overall reliability for pwa and hc
+
+To examine the reliability of core lexicon as a general measure
+incorporating variability across different stimuli, we calculated
+generalizability coefficients using the formula σ²participant /
+(σ²participant + σ²stimuli + σ²stimuli:participant + σ²residual). This
+analysis aimed to determine reliability when different stimuli might be
+used across testing occasions. For individuals with aphasia, the overall
+generalizability coefficient was G =
+`r icc_5_pwa$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_pwa$icc_results$ci_lower |> round(2)`,
+`r icc_5_pwa$icc_results$ci_upper |> round(2)`\]), indicating good
+reliability even when accounting for stimulus variability. In contrast,
+healthy controls demonstrated substantially lower overall reliability,
+with G = `r icc_5_control$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_control$icc_results$ci_lower |> round(2)`,
+`r icc_5_control$icc_results$ci_upper |> round(2)`\]), falling below
+conventional thresholds for acceptable reliability. This
+`r round((icc_5_pwa$icc_results$icc - icc_5_control$icc_results$icc) * 100, 1)`-percentage-point
+difference between groups suggests that diagnostic status meaningfully
+impacts measurement precision when stimuli vary across testing
+occasions.
+
+## Overall Reliability Including Multiple Stimuli
+
+To examine the reliability of core lexicon as a general measure
+incorporating variability across different stimuli, we calculated
+generalizability coefficients using the formula σ²participant /
+(σ²participant + σ²stimuli + σ²stimuli:participant + σ²residual). This
+analysis aimed to determine reliability when different stimuli might be
+used across testing occasions.
+
+When analyzing all participants together (collapsed across groups), the
+overall reliability was good (G = `r icc_5$icc_results$icc |> round(2)`,
+95% CI \[`r icc_5$icc_results$ci_lower |> round(2)`,
+`r icc_5$icc_results$ci_upper |> round(2)`\]). However, when group
+differences were statistically controlled by including diagnosis as a
+fixed effect, reliability decreased to G =
+`r icc_5_dx$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_dx$icc_results$ci_lower |> round(2)`,
+`r icc_5_dx$icc_results$ci_upper |> round(2)`\]). This
+`r round((icc_5$icc_results$icc - icc_5_dx$icc_results$icc) * 100, 1)`-percentage-point
+decrease suggests that diagnostic group membership contributes
+meaningfully to measurement precision.
+
+Variance component analysis was therefore completed separately for
+individuals with aphasia and healthy controls. For individuals with
+aphasia, the generalizability coefficient was G =
+`r icc_5_pwa$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_pwa$icc_results$ci_lower |> round(2)`,
+`r icc_5_pwa$icc_results$ci_upper |> round(2)`\]). Variance component
+analysis revealed that participant-level variance accounted for
+`r icc_5_pwa$variance_components |> filter(component == "participant") |> pull(percentage)`%
+of total variance, with stimuli contributing minimal variance
+(`r icc_5_pwa$variance_components |> filter(component == "stimuli") |> pull(percentage)`%),
+stimuli-by-participant interactions contributing
+`r icc_5_pwa$variance_components |> filter(component == "stimuli:participant") |> pull(percentage)`%,
+and residual error accounting for
+`r icc_5_pwa$variance_components |> filter(component == "residual") |> pull(percentage)`%.The
+relatively modest stimuli-by-participant interaction variance suggests
+good internal consistency, indicating that individuals with aphasia tend
+to perform consistently across different core lexicon stimuli.
+
+For healthy controls, the generalizability coefficient was G =
+`r icc_5_control$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_control$icc_results$ci_lower |> round(2)`,
+`r icc_5_control$icc_results$ci_upper |> round(2)`\]). Variance
+components showed participant-level variance accounting for
+`r icc_5_control$variance_components |> filter(component == "participant") |> pull(percentage)`%
+of total variance, with stimuli contributing
+`r icc_5_control$variance_components |> filter(component == "stimuli") |> pull(percentage)`%,
+stimuli-by-participant interactions contributing
+`r icc_5_control$variance_components |> filter(component == "stimuli:participant") |> pull(percentage)`%,
+and residual error accounting for
+`r icc_5_control$variance_components |> filter(component == "residual") |> pull(percentage)`%.
+The substantially larger stimuli-by-participant interaction variance
+suggests poorer internal consistency for healthy controls, indicating
+greater variability in how individuals perform across different stimuli
+relative to their peers.
+
+## Decision Study
+
+## Decision Study: Reliability with Multiple Stimuli
+
+To determine optimal assessment length, we conducted a decision study
+examining how reliability changes when averaging across multiple
+stimuli. Results demonstrated substantial differences between groups in
+the benefit gained from additional stimuli. For individuals with
+aphasia, single-stimulus reliability was already high (G =
+`r ds |> filter(group == "pwa", n_stimuli == 1) |> pull(g_coefficient)`,
+95% CI `r ds |> filter(group == "pwa", n_stimuli == 1) |> pull(ci_95)`),
+with modest improvements when using two stimuli (G =
+`r ds |> filter(group == "pwa", n_stimuli == 2) |> pull(g_coefficient)`,
+95% CI `r ds |> filter(group == "pwa", n_stimuli == 2) |> pull(ci_95)`)
+and excellent reliability achieved with three or more stimuli (G ≥
+`r ds |> filter(group == "pwa", n_stimuli == 3) |> pull(g_coefficient)`).
+In contrast, healthy controls showed substantial gains from additional
+stimuli, with single-stimulus reliability being poor (G =
+`r ds |> filter(group == "control", n_stimuli == 1) |> pull(g_coefficient)`,
+95% CI
+`r ds |> filter(group == "control", n_stimuli == 1) |> pull(ci_95)`) but
+reaching good reliability only when averaging across four stimuli (G =
+`r ds |> filter(group == "control", n_stimuli == 4) |> pull(g_coefficient)`,
+95% CI
+`r ds |> filter(group == "control", n_stimuli == 4) |> pull(ci_95)`) and
+excellent reliability with all five stimuli (G =
+`r ds |> filter(group == "control", n_stimuli == 5) |> pull(g_coefficient)`,
+95% CI
+`r ds |> filter(group == "control", n_stimuli == 5) |> pull(ci_95)`).
+These findings suggest that while single stimuli may be sufficient for
+reliable measurement in individuals with aphasia, assessments of healthy
+controls require multiple stimuli to achieve adequate reliability for
+clinical or research purposes.
+
+## Minimum Detectable Change
+
+To provide clinically meaningful benchmarks for interpreting score
+changes, we calculated minimum detectable change (MDC) values for each
+stimulus within each group. This analysis aimed to establish the minimum
+change required to conclude that observed differences represent true
+change rather than measurement error.
+
+For stimulus-specific administration (using the same stimulus across
+timepoints), MDC values for individuals with aphasia ranged from
+`r round(min(mdc_all |> filter(dx == "pwa") |> pull(mdc)), 2)` to
+`r round(max(mdc_all |> filter(dx == "pwa") |> pull(mdc)), 2)` points,
+representing
+`r round(min((mdc_all |> filter(dx == "pwa") |> left_join(all_data |> distinct(stimuli, dx, max), by = c("stimuli", "dx")) |> mutate(percent = mdc/max * 100) |> pull(percent))), 1)`%
+to
+`r round(max((mdc_all |> filter(dx == "pwa") |> left_join(all_data |> distinct(stimuli, dx, max), by = c("stimuli", "dx")) |> mutate(percent = mdc/max * 100) |> pull(percent))), 1)`%
+of the maximum possible score for each stimulus. **Statistical
+significance level used for MDC calculation needed**. Healthy controls
+showed similar patterns, with MDC values ranging from
+`r round(min(mdc_all |> filter(dx == "control") |> pull(mdc)), 2)` to
+`r round(max(mdc_all |> filter(dx == "control") |> pull(mdc)), 2)`
+points
+(`r round(min((mdc_all |> filter(dx == "control") |> left_join(all_data |> distinct(stimuli, dx, max), by = c("stimuli", "dx")) |> mutate(percent = mdc/max * 100) |> pull(percent))), 1)`%
+to
+`r round(max((mdc_all |> filter(dx == "control") |> left_join(all_data |> distinct(stimuli, dx, max), by = c("stimuli", "dx")) |> mutate(percent = mdc/max * 100) |> pull(percent))), 1)`%
+of maximum scores).
+
+The
+`r mdc_all |> filter(dx == "pwa") |> slice_max(mdc) |> pull(stimuli)`
+stimulus, despite having the highest ICCs, showed the largest absolute
+MDC values
+(`r mdc_all |> filter(dx == "pwa", stimuli == "Cinderella") |> pull(mdc) |> round(2)`
+for aphasia,
+`r mdc_all |> filter(dx == "control", stimuli == "Cinderella") |> pull(mdc) |> round(2)`
+for controls) due to its longer length and larger measurement scale.
+However, when expressed as percentages of total possible scores,
+`r mdc_all |> filter(dx == "pwa", stimuli == "Cinderella") |> left_join(all_data |> distinct(stimuli, dx, max), by = c("stimuli", "dx")) |> mutate(percent = mdc/max * 100) |> pull(stimuli)`
+showed among the smallest relative MDC values
+(`r mdc_all |> filter(dx == "pwa", stimuli == "Cinderella") |> left_join(all_data |> distinct(stimuli, dx, max), by = c("stimuli", "dx")) |> mutate(percent = mdc/max * 100) |> pull(percent) |> round(1)`%
+for aphasia,
+`r mdc_all |> filter(dx == "control", stimuli == "Cinderella") |> left_join(all_data |> distinct(stimuli, dx, max), by = c("stimuli", "dx")) |> mutate(percent = mdc/max * 100) |> pull(percent) |> round(1)`%
+for controls).
+
+For flexible administration allowing different stimuli across
+timepoints, MDC values were calculated using percentage accuracy scores
+to account for stimuli length differences. Results showed MDC values of
+`r mdc_all_5 |> filter(dx == "pwa") |> pull(mdc) |> round(2)` for
+individuals with aphasia and
+`r mdc_all_5 |> filter(dx == "control") |> pull(mdc) |> round(2)` for
+healthy controls on the percentage accuracy scale, representing
+approximately
+`r round(mdc_all_5 |> filter(dx == "pwa") |> pull(mdc) * 100, 0)`-`r round(mdc_all_5 |> filter(dx == "control") |> pull(mdc) * 100, 0)`%
+change in accuracy required for meaningful improvement.
+
+## Summary of Reliability Findings
+
+Overall, results demonstrated that core lexicon measures show good to
+excellent test-retest reliability for individuals with aphasia across
+all stimuli, with ICCs consistently exceeding
+`r round(min(icc_table |> filter(dx == "pwa") |> pull(icc)), 2)`. For
+healthy controls, reliability was more variable and generally lower,
+particularly for shorter stimuli. The
+`r icc_table |> arrange(desc(icc)) |> slice(1) |> pull(stimuli)`
+stimulus consistently demonstrated the highest reliability across both
+groups, suggesting advantages of longer, more complex stimuli for
+reliable measurement. The absence of systematic practice effects
+supports the measure's utility for repeated administration in clinical
+and research contexts.
