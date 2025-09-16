@@ -269,13 +269,63 @@ manuscript_table2 = icc_table_c |>
 # To save it as a word document:
 doc <- officer::read_docx()
 # add the table to the document
-doc <- body_add_flextable(doc, value = manuscript_table)
+doc <- body_add_flextable(doc, value = manuscript_table2)
 # filename within the path we want
 print(doc, target = "output/icc_by_stimuli_and_group_consistency.docx")
 
 
 knitr::kable(icc_table_c |> select(-ci_lower, -ci_upper))
 ```
+
+```{r}
+
+icc_all = icc_table |> 
+  select(stimuli, dx, icc_a1 = icc, ci_95_a1 = ci_95) |> 
+  left_join(
+    icc_table_c |> select(stimuli, dx, icc_c1 = icc, ci_95_c1 = ci_95),
+    by = join_by(stimuli, dx)
+  )
+
+manuscript_table4 = icc_all |> 
+  rename(Stimuli = stimuli, Group = dx) |> 
+  flextable() |> 
+  set_table_properties(align = "left") |>
+  compose(
+    j = "icc_a1",
+    part = "header",
+    value = as_paragraph("ICC", as_sub("A,1"))
+  ) |>
+  compose(
+    j = "ci_95_a1", 
+    part = "header",
+    value = as_paragraph("95% CI", as_sub("A,1"))
+  ) |>
+  compose(
+    j = "icc_c1",
+    part = "header", 
+    value = as_paragraph("ICC", as_sub("C,1"))
+  ) |>
+  compose(
+    j = "ci_95_c1",
+    part = "header",
+    value = as_paragraph("95% CI", as_sub("C,1"))
+  ) |>
+  flextable::set_caption(apa_caption("Table X. Reliability Estimtes by Stimuli and Group"), 
+                         align_with_table = TRUE,
+                         word_stylename = "Normal",
+                         fp_p = fp_par(text.align = "left")) |>
+  flextable::autofit(add_w = 0, add_h = 1) |>
+  theme_apa2()
+
+# To save it as a word document:
+doc <- officer::read_docx()
+# add the table to the document
+doc <- body_add_flextable(doc, value = manuscript_table4)
+# filename within the path we want
+print(doc, target = "output/icc_by_stimuli_and_group_all.docx")
+
+```
+
 
 We can also get estimates of "time" to examine practice effects directly: 
 
@@ -391,7 +441,7 @@ ds
 ```
 
 ```{r}
-ds |> 
+ds_plot = ds |> 
   ggplot(aes(x = n_stimuli, y = g_coefficient, color = group)) +
   geom_point( position = position_dodge(0.3)) + 
   geom_errorbar(aes(ymin=ci_lower, ymax = ci_upper), width = 0.3, position = position_dodge(0.3)) + 
@@ -399,6 +449,8 @@ ds |>
   scale_y_continuous(labels = scales::label_percent(), breaks = seq(0, 1, 0.1), limits = c(0,1)) + 
   theme(legend.position = "bottom") + 
   labs(y = "Estimate of Reliability", x = "Number of Stimuli")
+
+ggsave(plot = ds_plot, filename = here::here("output", "decision-study.png"))
 ```
 
 ### MDC
