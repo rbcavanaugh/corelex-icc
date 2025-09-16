@@ -310,11 +310,12 @@ manuscript_table4 = icc_all |>
     part = "header",
     value = as_paragraph("95% CI", as_sub("C,1"))
   ) |>
-  flextable::set_caption(apa_caption("Table X. Reliability Estimtes by Stimuli and Group"), 
+  flextable::set_caption(apa_caption("Table 3. Estimates of absolute and relative reliability by stimulus for individuals with aphasia and healthy controls"), 
                          align_with_table = TRUE,
                          word_stylename = "Normal",
                          fp_p = fp_par(text.align = "left")) |>
   flextable::autofit(add_w = 0, add_h = 1) |>
+    flextable::add_footer_lines(values = "Note: ICCA,1 represents single-rater agreement intraclass correlation coefficients (dependability coefficients) and ICCC,1 refers to single-rater consistency intraclass correlation coefficients (generalizability coefficients). ") |>
   theme_apa2()
 
 # To save it as a word document:
@@ -345,7 +346,7 @@ time_table_manuscript = time_table |>
   rename(Group = dx) |> 
   flextable() |> 
   set_table_properties(align = "left") |>   # Make sure table is left-aligned
-  flextable::set_caption(apa_caption("Supplemental Table X. Fixed effects of time for all stimuli and groups"), align_with_table = TRUE,
+  flextable::set_caption(apa_caption("Supplemental Table 1. Fixed effects of time for all stimuli and groups"), align_with_table = TRUE,
                          word_stylename = "Normal",
                          fp_p = fp_par(text.align = "left")) |>
   flextable::autofit(add_w = 0, add_h = 1) |>
@@ -478,7 +479,7 @@ manuscript_table3 = mdc_all |>
   select(Stimuli = stimuli, Group = dx, MDC = mdc, SEM = sem, `% of Total` = percent_of_total) |> 
   flextable() |> 
   set_table_properties(align = "left") |>   # Make sure table is left-aligned
-  flextable::set_caption(apa_caption("Table X. Minimum Detectible Change by Stimuli and Group"), align_with_table = TRUE,
+  flextable::set_caption(apa_caption("Table 4. Minimum Detectable Change Scores by stimulus for individuals with aphasia and healthy controls"), align_with_table = TRUE,
                          word_stylename = "Normal",
                          fp_p = fp_par(text.align = "left")) |>
   flextable::autofit(add_w = 0, add_h = 1) |>
