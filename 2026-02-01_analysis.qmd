@@ -1,0 +1,530 @@
+---
+title: "Test-Retest Reliability of Core Lexicon Analysis"
+author:
+  - name: "Sarah Grace Dalton"
+    affiliation: "University of Georgia, Department of Communication Sciences and Special Education"
+    corresponding: true
+  - name: "Robert Cavanaugh"
+    affiliation: "MGH Institute of Health Professions, School of Health and Rehabilitation Sciences"
+  - name: "Brielle C. Stark"
+    affiliation: "Indiana University Bloomington, Department of Speech, Language, and Hearing Sciences"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+  pdf: default
+execute:
+  cache: false
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+
+### Load packages and setup file reading
+
+```{r, warning = FALSE, error = FALSE, message = FALSE, cache = FALSE}
+
+
+library(tidyverse)
+library(here)
+library(lme4)
+library(readxl)
+library(boot)
+library(flextable)
+library(easystats)
+library(officer)
+
+source("gtheory-icc.R")
+set.seed(42)
+
+raw_data <- read_csv(here::here("data", "corelex-deid-data.csv"))
+
+bootstrap_n = 1000
+
+```
+
+### Data Cleaning
+
+```{r}
+
+all_data = raw_data |> 
+  select(-difference) |> 
+  pivot_longer(cols = starts_with("t"), 
+               names_to = "time", 
+               values_to = "score") |> 
+  rename(stimuli = sheet_name) |> 
+  mutate(across(where(is.character), as.factor),
+         participant = as.factor(paste0("p", str_extract(participant, "^[^.]*")))) |> 
+  mutate(max_score = case_when(
+    stimuli == "Cat" ~ 35,
+    stimuli == "Cinderella" ~ 95,
+    stimuli == "Sandwich" ~ 25,
+    stimuli == "Umbrella" ~ 36,
+    stimuli == "Window" ~ 24,
+    TRUE ~ NA
+  )) |> 
+  mutate(percent_acc = score/max_score)
+
+knitr::kable(head(all_data))
+```
+
+### Visualize test-retest
+
+- did not use thsi figure; see figure at end of doc with 95% PI
+
+```{r, fig.height = 6, fig.width = 8.5}
+all_wide = all_data |> select(-score) |> 
+  pivot_wider(names_from = time, values_from = percent_acc) 
+
+p1 = all_wide |> 
+  mutate(dx = ifelse(dx == "control", "Healthy Control", "Individuals with Aphasia")) |> 
+  ggplot(aes(x = t1, y = t2, fill = dx)) +
+  #geom_point() + 
+  geom_jitter(alpha = 0.8, size = 2, shape = 21, color = "lightgrey", width = .015, height = 0.015) +
+  geom_abline(alpha = 0.6) + 
+  facet_wrap(~stimuli, ncol = 3) + 
+  scale_y_continuous(limits = c(-0.05, 1.05), labels = scales::label_percent(), breaks = seq(0, 1, 0.25)) + 
+  scale_x_continuous(limits = c(-0.05, 1.05), labels = scales::label_percent(), breaks = seq(0, 1, 0.25)) +
+  theme_bw(base_size = 14) + 
+  theme(legend.position = "bottom", aspect.ratio = 1) +
+  labs(fill = "", x = "Percent of Checklist Produced, Time 1", y = "Percent of Checklist Produced, Time 2") +
+  coord_fixed()
+
+ggsave(plot = p1, here::here("output" , "figure 1.png"), height = 7, width = 9)
+
+p1
+```
+
+### Estimating reliability under a G-theory framework; Revision: Binomial Model
+
+In our revision, we adjusted the model to take the proportion of core lex words produced rather than just the count. We need to check for overdispersion. This was run for each combination of the models. Dispersion ratios farther away from 1 (p<0.05) indicate over or underdispersion, the former being more problematic. In this case, the data are equidispersed. 
+
+```{r, warning = FALSE, message = FALSE}
+overdispersion <- all_data |>
+  group_nest(stimuli, dx) |>
+  mutate(
+    od = map(data, ~{
+      m <- glmer(cbind(score, max_score - score) ~ 1 + (1|participant) + (1|time),
+                 data = .x, family = binomial())
+      performance::check_overdispersion(m)
+    }),
+    dispersion_ratio = map_dbl(od, ~.x$dispersion_ratio),
+    p_value = map_dbl(od, ~.x$p_value)
+  ) |>
+  select(stimuli, dx, dispersion_ratio, p_value)
+
+knitr::kable(overdispersion)
+```
+
+
+```{r, cache = TRUE, message = FALSE, warning = FALSE}
+# Run ICC analysis on all stimuli / dx
+icc_A1 <- all_data |>
+  group_nest(stimuli, dx) |>
+  mutate(
+    icc_results = map(data,
+                      ~calc_icc_formula_binomial(cbind(score, max_score - score) ~ 1 + (1|participant) + (1|time),
+                      "participant", .x, R = bootstrap_n))
+  )
+
+# Extract ICC results table
+icc_table <- icc_A1 |>
+  mutate(icc_data = map(icc_results, "icc_results")) |>
+  select(stimuli, dx, icc_data) |>
+  unnest(icc_data)
+
+# Extract variance components table  
+variance_table <- icc_A1 |>
+  mutate(var_data = map(icc_results, "variance_components")) |>
+  select(stimuli, dx, var_data) |>
+  unnest(var_data)
+
+manuscript_table = icc_table |> 
+  select(Stimuli = stimuli, Group = dx, Dependability = icc, `95% CI` = `ci_95`) |> 
+  flextable() |> 
+  set_table_properties(align = "left") |>   # Make sure table is left-aligned
+  flextable::set_caption(apa_caption("Table X. Dependability Coefficients by Stimuli and Group"), align_with_table = TRUE,
+                         word_stylename = "Normal",
+                         fp_p = fp_par(text.align = "left")) |>
+  flextable::autofit(add_w = 0, add_h = 1) |>
+  flextable::add_footer_lines(values = "Note: Dependability coefficients are analogous to intraclass correlations for agreement") |>
+  theme_apa2()
+
+# To save it as a word document:
+doc <- officer::read_docx()
+# add the table to the document
+doc <- body_add_flextable(doc, value = manuscript_table)
+# filename within the path we want
+print(doc, target = "output/icc_by_stimuli_and_group_revision.docx")
+
+
+knitr::kable(icc_table)
+```
+
+
+
+They are very similar. Minor differences in the confidence intervals do
+not impact conclusions.
+
+### Consistency ICCs
+
+Generalizability coefficients or Consistency ICCs for situations where
+absolute agreement is not necessary, as recommended by tenHove 2024.
+
+```{r, message = FALSE, warning = FALSE}
+# Run ICC analysis on all stimuli / dx
+icc_C1 <- all_data |>
+  group_nest(stimuli, dx) |>
+  mutate(
+    icc_results = map(data, ~calc_icc_formula_binomial(cbind(score, max_score - score) ~ 1 + time + (1|participant), "participant", .x, R = bootstrap_n))
+  )
+
+# Extract ICC results table
+icc_table_c <- icc_C1 |>
+  mutate(icc_data = map(icc_results, "icc_results")) |>
+  select(stimuli, dx, icc_data) |>
+  unnest(icc_data)
+
+# Extract variance components table  
+variance_table_c <- icc_C1 |>
+  mutate(var_data = map(icc_results, "variance_components")) |>
+  select(stimuli, dx, var_data) |>
+  unnest(var_data)
+
+practice_effects <- icc_C1 |>
+     mutate(params = map(icc_results, "parameters")) |>
+     select(stimuli, dx, params) |>
+     unnest(params) |> filter(Effects == "fixed", Parameter == "timet2")
+
+manuscript_table2 = icc_table_c |> 
+    select(Stimuli = stimuli, Group = dx, 'Generalizability' = icc, `95% CI` = `ci_95`) |> 
+  flextable() |> 
+  set_table_properties(align = "left") |>   # Make sure table is left-aligned
+  flextable::set_caption(apa_caption("Table X. Generalizability Coefficients by Stimuli and Group"), align_with_table = TRUE,
+                         word_stylename = "Normal",
+                         fp_p = fp_par(text.align = "left")) |>
+  flextable::autofit(add_w = 0, add_h = 1) |>
+  flextable::add_footer_lines(values = "Note: Generalizability coefficients are analogous to intraclass correlations for consistency") |>
+  theme_apa2()
+
+# To save it as a word document:
+doc <- officer::read_docx()
+# add the table to the document
+doc <- body_add_flextable(doc, value = manuscript_table2)
+# filename within the path we want
+print(doc, target = "output/icc_by_stimuli_and_group_consistency_revision.docx")
+
+
+knitr::kable(icc_table_c |> select(-ci_lower, -ci_upper))
+```
+
+- here's a table of both sets of coefficients: 
+
+```{r}
+
+icc_all = icc_table |> 
+  select(stimuli, dx, icc_a1 = icc, ci_95_a1 = ci_95) |> 
+  left_join(
+    icc_table_c |> select(stimuli, dx, icc_c1 = icc, ci_95_c1 = ci_95),
+    by = join_by(stimuli, dx)
+  )
+
+manuscript_table4 = icc_all |> 
+  rename(Stimuli = stimuli, Group = dx) |> 
+  flextable() |> 
+  set_table_properties(align = "left") |>
+  compose(
+    j = "icc_a1",
+    part = "header",
+    #value = as_paragraph("ICC", as_sub("A,1"))
+    value = as_paragraph("Dependability")
+  ) |>
+  compose(
+    j = "ci_95_a1", 
+    part = "header",
+    #value = as_paragraph("95% CI", as_sub("A,1"))
+    value = as_paragraph("95% CI")
+  ) |>
+  compose(
+    j = "icc_c1",
+    part = "header", 
+    #value = as_paragraph("ICC", as_sub("C,1"))
+    value = as_paragraph("Generalizability")
+  ) |>
+  compose(
+    j = "ci_95_c1",
+    part = "header",
+   # value = as_paragraph("95% CI", as_sub("C,1"))
+       value = as_paragraph("95% CI")
+
+  ) |>
+  flextable::set_caption(apa_caption("Table 3. Estimates of Dependability and Generalizability by stimulus for individuals with aphasia and healthy controls"), 
+                         align_with_table = TRUE,
+                         word_stylename = "Normal",
+                         fp_p = fp_par(text.align = "left")) |>
+  flextable::autofit(add_w = 0, add_h = 1) |>
+    flextable::add_footer_lines(values = "Note: Dependability coefficients are analogous to single-rater agreement intraclass correlation coefficients and Generalizability coefficients are analogous to single-rater consistency intraclass correlation coefficients. ") |>
+  theme_apa2()
+
+# To save it as a word document:
+doc <- officer::read_docx()
+# add the table to the document
+doc <- body_add_flextable(doc, value = manuscript_table4)
+# filename within the path we want
+print(doc, target = "output/icc_by_stimuli_and_group_all-revision.docx")
+
+manuscript_table4
+
+```
+
+
+We can also get estimates of "time" to examine practice effects directly: 
+
+```{r}
+time_table = practice_effects <- icc_C1 |>
+     mutate(params = map(icc_results, "parameters")) |>
+     select(stimuli, dx, params) |>
+     unnest(params) |> filter(Effects == "fixed", Parameter == "timet2") |> 
+     format_table()
+
+time_table_manuscript = time_table |> 
+  select(-Effects, -df, -z, -Group, Stimuli = stimuli) |> 
+  rename(Group = dx) |> 
+  flextable() |> 
+  set_table_properties(align = "left") |>   # Make sure table is left-aligned
+  flextable::set_caption(apa_caption("Supplemental Table 1. Fixed effects of time for all stimuli and groups"), align_with_table = TRUE,
+                         word_stylename = "Normal",
+                         fp_p = fp_par(text.align = "left")) |>
+  flextable::autofit(add_w = 0, add_h = 1) |>
+  flextable::add_footer_lines(values = "") |>
+  theme_apa2()
+
+# To save it as a word document:
+doc <- officer::read_docx()
+# add the table to the document
+doc <- body_add_flextable(doc, value = time_table_manuscript)
+# filename within the path we want
+print(doc, target = "output/supplement-time-1_revision.docx")
+
+knitr::kable(time_table)
+
+```
+
+
+### Overall effects including all stimuli
+
+Looking at reliability as if stimuli were facets. This includes
+estimates with and without group as a fixed effect
+
+```{r, message = FALSE, warning = FALSE}
+
+# first we have to standardize the scores. I've done this by calculating % 
+# accuracy using the max possible scores. this normalizes the scores accounting
+# for stimuli length. 
+
+icc_5 = calc_icc_formula_binomial(
+  formula = cbind(score, max_score-score) ~ (1|participant) + (1|stimuli) + (1|stimuli:participant) + (1|time) + (1|time:participant) + (1|time:stimuli),
+  icc_facet = "participant",
+  R = bootstrap_n,
+  data = all_data
+)
+
+icc_5_dx = calc_icc_formula_binomial(
+  formula = cbind(score, max_score-score) ~ 1 + dx + (1|participant) + (1|stimuli)+ (1|stimuli:participant),
+  icc_facet = "participant",
+  R = bootstrap_n,
+  data = all_data
+)
+
+```
+
+```{r}
+knitr::kable(bind_rows(icc_5$icc_results |> mutate(method = "collapsed") |> select(-ci_upper, -ci_lower),
+                       icc_5_dx$icc_results |> mutate(method = "dx-removed") |> select(-ci_upper, -ci_lower)
+                       ))
+```
+
+Then we split out pwa and control particpants:
+
+```{r, message = FALSE, warning = FALSE}
+pwa = all_data |> filter(dx == "pwa")
+control = all_data |> filter(dx == "control")
+
+# Call function
+icc_5_pwa <- calc_icc_formula_binomial(
+  formula = cbind(score, max_score-score) ~ (1|participant) + (1|stimuli) + (1|stimuli:participant) + (1|time) + (1|time:participant) + (1|time:stimuli),
+  icc_facet = "participant",
+  R = bootstrap_n,
+  data = pwa
+)
+
+# Call function
+icc_5_control <- calc_icc_formula_binomial(
+  formula = cbind(score, max_score-score) ~ (1|participant) + (1|stimuli) + (1|stimuli:participant) + (1|time) + (1|time:participant) + (1|time:stimuli),
+  icc_facet = "participant",
+  R = bootstrap_n,
+  data = control
+)
+```
+
+### Decision study
+
+-   what would be the effects of averaging 1...5 stimuli on reliability?
+-   we can use the models and bootstrapped iterations to derive these estimates and uncertainty values
+
+```{r}
+# Get decision study results instantly (no refitting!)
+decision_study_pwa <- calc_decision_study_from_bootstrap(icc_5_pwa) |> mutate(group = "pwa")
+decision_study_pwa 
+
+# Get decision study results instantly (no refitting!)
+decision_study_control <- calc_decision_study_from_bootstrap(icc_5_control) |> mutate(group = "control")
+decision_study_control
+
+ds = bind_rows(
+  decision_study_pwa,
+  decision_study_control
+)
+
+knitr::kable(ds)
+```
+
+- and plot the results: 
+
+```{r}
+ds_plot = ds |> 
+  ggplot(aes(x = n_stimuli, y = phi_coefficient, color = group)) +
+  geom_point( position = position_dodge(0.3)) + 
+  geom_errorbar(aes(ymin=ci_lower, ymax = ci_upper), width = 0.3, position = position_dodge(0.3)) + 
+  theme_bw(base_size = 12) + 
+  scale_y_continuous(labels = scales::label_percent(), breaks = seq(0, 1, 0.1), limits = c(0,1)) + 
+  theme(legend.position = "bottom") + 
+  scale_color_discrete(labels = c(control = "Healthy Control", 
+                                pwa = "Individuals with Aphasia")) +
+  labs(y = "Estimate of Reliability", x = "Number of Stimuli")
+
+ggsave(plot = ds_plot, filename = here::here("output", "decision-study-revision.png"))
+
+ds_plot
+```
+
+### MDC
+
+Calculating MDC for each stimuli. MDC 95 can also be derived from the initial models; calcuating the SEM
+
+- this returns estimates of MDC in the number of items for 5-item ranges throughout the range of possible options
+
+```{r}
+mdc <- all_data |>
+  group_by(stimuli, dx) |>
+  summarise(
+    mdc_logit = calc_mdc_formula_binomial(
+      formula = cbind(score, max_score - score) ~ (1|participant) + (1|time),
+      icc_facet = "participant",
+      exclude_from_error = NULL,
+      data = cur_data()
+    ),
+    .groups = "drop"
+  ) |> 
+  left_join(all_data |> distinct(stimuli, max_score), by = "stimuli")
+
+# Step 2: Create MDC lookup tables by baseline
+mdc_tables <- calc_mdc_by_baseline(mdc)
+readr::write_csv(mdc_tables, here::here("output", "Supplement 2 - MDC by stimuli.csv"))
+  
+# Create plot data
+plot_data <- mdc |>
+  mutate(
+    plot_data = map(mdc_logit, function(mdc_log) {
+      tibble(baseline = seq(0.05, 0.95, by = 0.01)) |>
+        mutate(
+          baseline_logit = qlogis(baseline),
+          lower_pct = plogis(baseline_logit - mdc_log),
+          upper_pct = plogis(baseline_logit + mdc_log)
+        )
+    })
+  ) |>
+  select(stimuli, dx, plot_data) |>
+  unnest(plot_data)
+
+head(mdc_tables)
+```
+
+
+```{r}
+# Create plot
+p = ggplot(plot_data, aes(x = baseline)) +
+  geom_ribbon(aes(ymin = lower_pct, ymax = upper_pct, fill = dx), 
+              alpha = 0.3) +
+  geom_line(aes(y = baseline), linetype = "dashed", color = "black") +
+  geom_line(aes(y = lower_pct, color = dx)) +
+  geom_line(aes(y = upper_pct, color = dx)) +
+  facet_grid(dx~stimuli) +
+  scale_x_continuous(labels = scales::percent, breaks = seq(0, 1, 0.25), limits = c(0, 1)) +
+  scale_y_continuous(labels = scales::percent, breaks = seq(0, 1, 0.25)) +
+  coord_fixed() +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", panel.spacing.x = unit(1.5, "lines")) +
+  labs(
+    x = "Baseline Score (Time 1)",
+    y = "Score Range Including MDC",
+    title = "Minimal Detectable Change (95% CI) by Baseline Score",
+    fill = "Group",
+    color = "Group"
+  )
+
+ggsave(plot = p, filename = "MDC-by-stimuli-baseline.png")
+
+p
+```
+
+```{r}
+p = all_wide |> 
+  mutate(dx = ifelse(dx == "control", "Healthy Control", "Individuals with Aphasia")) |> 
+  ggplot(aes(x = t1, y = t2, fill = dx)) +
+  #geom_point() + 
+  geom_jitter(alpha = 0.8, size = 2, shape = 21, color = "lightgrey", width = .015, height = 0.015) +
+  geom_abline(alpha = 0.6) + 
+  geom_ribbon(inherit.aes = FALSE,
+              data = plot_data |> rename(t1 = baseline) |> mutate(dx = ifelse(dx == "control", "Healthy Control", "Individuals with Aphasia")),
+              aes(x = t1, ymin = lower_pct, ymax = upper_pct, fill = dx),
+              alpha = 0.3) +
+  facet_grid(dx~stimuli) + 
+  scale_y_continuous(limits = c(-0.05, 1.05), labels = scales::label_percent(), breaks = seq(0, 1, 0.25)) + 
+  scale_x_continuous(limits = c(-0.05, 1.05), labels = scales::label_percent(), breaks = seq(0, 1, 0.25)) +
+  theme_bw(base_size = 12) + 
+  theme(legend.position = "bottom", aspect.ratio = 1) +
+  labs(fill = "", x = "Percent of Checklist Produced, Time 1", y = "Percent of Checklist Produced, Time 2") +
+  coord_fixed()
+
+ggsave(plot = p, filename = here::here("output", "figure 1 - revision.png"), width = 12, height = 10)
+
+p
+```
+
+```{r}
+sems = all_data |>
+  group_by(stimuli, dx) |>
+  summarise(
+    sem_logit = calc_sem(
+      formula = cbind(score, max_score - score) ~ (1|participant) + (1|time),
+      icc_facet = "participant",
+      exclude_from_error = NULL,
+      data = cur_data()
+    ),
+    .groups = "drop"
+  )
+
+knitr::kable(sems)
+```
+
+
+```{r}
+mdc_all <- mdc_tables |> rename(mdc = `mdc (items)`)
+```
+
+```{r}
+save.image(here::here("output", "output-2-5.RData"))
+```

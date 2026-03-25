@@ -1,0 +1,101 @@
+---
+title: "results-text"
+format: html
+editor: visual
+---
+
+```{r, warning = FALSE, message = FALSE}
+
+library(tidyverse)
+library(here)
+library(lme4)
+library(readxl)
+library(boot)
+library(flextable)
+library(easystats)
+library(officer)
+
+load(here::here("output", "output-2-5.RData"))
+```
+
+
+Results
+
+Stimuli-level test-retest reliability
+
+The relationship between performance at time one (test) and time two (retest) are visualized in Figure 1. For individuals with aphasia, dependability estimates (comparable to a two-way, single-rater random-effects agreement ICC) ranged from `r round(min(icc_table$icc[icc_table$dx == "pwa"]), 2)` to `r round(max(icc_table$icc[icc_table$dx == "pwa"]), 2)`, with all stimuli demonstrating good to excellent reliability according to established guidelines (Koo & Li, 2016). The Cinderella stimulus showed the highest reliability (`r round(icc_table$icc[icc_table$stimuli == "Cinderella" & icc_table$dx == "pwa"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Cinderella" & icc_table$dx == "pwa"]`), followed by Umbrella (`r round(icc_table$icc[icc_table$stimuli == "Umbrella" & icc_table$dx == "pwa"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Umbrella" & icc_table$dx == "pwa"]`), Cat (`r round(icc_table$icc[icc_table$stimuli == "Cat" & icc_table$dx == "pwa"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Cat" & icc_table$dx == "pwa"]`), Sandwich (`r round(icc_table$icc[icc_table$stimuli == "Sandwich" & icc_table$dx == "pwa"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Sandwich" & icc_table$dx == "pwa"]`), and Window (`r round(icc_table$icc[icc_table$stimuli == "Window" & icc_table$dx == "pwa"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Window" & icc_table$dx == "pwa"]`).
+
+In contrast, healthy controls showed more variable reliability across stimuli, with coefficients ranging from `r round(min(icc_table$icc[icc_table$dx == "control"]), 2)` to `r round(max(icc_table$icc[icc_table$dx == "control"]), 2)`. The `r icc_table |> filter(dx == "control") |> slice_max(icc) |> pull(stimuli)` stimulus again demonstrated the highest reliability (`r round(icc_table$icc[icc_table$stimuli == "Cinderella" & icc_table$dx == "control"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Cinderella" & icc_table$dx == "control"]`), while `r icc_table |> filter(dx == "control") |> slice_min(icc) |> pull(stimuli)` showed the poorest reliability (`r icc_table |> filter(dx == "control") |> slice_min(icc) |> pull(icc) |> round(2)`, 95% CI `r icc_table |> filter(dx == "control") |> slice_min(icc) |> pull(ci_95)`). The remaining stimuli showed moderate reliability: `r icc_table$stimuli[icc_table$stimuli == "Cat" & icc_table$dx == "control"]` (`r round(icc_table$icc[icc_table$stimuli == "Cat" & icc_table$dx == "control"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Cat" & icc_table$dx == "control"]`), `r icc_table$stimuli[icc_table$stimuli == "Sandwich" & icc_table$dx == "control"]` (`r round(icc_table$icc[icc_table$stimuli == "Sandwich" & icc_table$dx == "control"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Sandwich" & icc_table$dx == "control"]`), and `r icc_table$stimuli[icc_table$stimuli == "Umbrella" & icc_table$dx == "control"]` (`r round(icc_table$icc[icc_table$stimuli == "Umbrella" & icc_table$dx == "control"], 2)`, 95% CI `r icc_table$ci_95[icc_table$stimuli == "Umbrella" & icc_table$dx == "control"]`).
+
+Generalizability coefficients (comparable to a two-way, single-rater, mixed effects consistency ICC) were largely unchanged from the dependability coefficients, indicating minimal shift in scores between timepoints. Consistent with this result, there was only a significant effect of timepoint for the Cinderella task for individuals with aphasia, and it was very small (b = `r practice_effects$Coefficient[practice_effects$stimuli == "Cinderella" & practice_effects$dx == "pwa"]`, 95% CI: `r practice_effects$"95% CI"[practice_effects$stimuli == "Cinderella" & practice_effects$dx == "pwa"]`, p = `r practice_effects$p[practice_effects$stimuli == "Cinderella" & practice_effects$dx == "pwa"]`). This coefficient was approximately 60% of the standard error of measurement (`r round(sems$sem_logit[sems$stimuli == "Cinderella" & sems$dx == "pwa"], 2)`), suggesting that, while statistically significant, the size of this practice effect is practically negligible. Taken together, the findings suggest that core lexicon performance is sufficiently stable across sessions without evidence of meaningful practice effects. All stimuli-level reliability coefficients are reported in Table 4.
+
+[ Figure 1 and Table 4 about here]
+
+Across-stimuli test-retest reliability
+
+To examine the reliability of core lexicon as a general measure
+incorporating variability across different stimuli, we calculated
+dependability coefficients using the formula σ²participant /
+(σ²participant + σ²stimuli + σ²stimuli:participant + σ²time + σ²time:participant + σ²time:stimuli + σ²residual). For
+individuals with aphasia, the overall dependability coefficient was
+`r icc_5_pwa$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_pwa$icc_results$ci_lower |> round(2)`, `r icc_5_pwa$icc_results$ci_upper |> round(2)`\]),
+indicating good reliability even when accounting for stimulus
+variability. In contrast, healthy control participants demonstrated substantially
+lower overall reliability, with a dependability coefficient of
+`r icc_5_control$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_control$icc_results$ci_lower |> round(2)`, `r icc_5_control$icc_results$ci_upper |> round(2)`\]),
+falling below conventional thresholds for acceptable reliability.
+
+For individuals with aphasia, variance component analysis revealed that
+participant-level variance accounted
+for `r icc_5_pwa$variance_components |> filter(component == "participant") |> pull(percentage)` 
+of total variance, with stimuli contributing minimal variance
+(`r icc_5_pwa$variance_components |> filter(component == "stimuli") |> pull(percentage)`),
+stimuli-by-participant interactions
+contributing `r icc_5_pwa$variance_components |> filter(component == "stimuli:participant") |> pull(percentage)`,
+time contributing `r icc_5_pwa$variance_components |> filter(component == "time") |> pull(percentage)`,
+time-by-participant interactions contributing `r icc_5_pwa$variance_components |> filter(component == "time:participant") |> pull(percentage)`,
+time-by-stimuli interactions contributing `r icc_5_pwa$variance_components |> filter(component == "time:stimuli") |> pull(percentage)`,
+and residual error accounting
+for `r icc_5_pwa$variance_components |> filter(component == "residual") |> pull(percentage)`. The
+relatively modest stimuli-by-participant interaction variance suggests
+good internal consistency, indicating that individuals with aphasia tend
+to perform consistently across different core lexicon stimuli, but that
+some participants do better on specific stimuli.
+
+For healthy controls, variance components showed participant-level
+variance accounting
+for `r icc_5_control$variance_components |> filter(component == "participant") |> pull(percentage)` 
+of total variance, with stimuli
+contributing `r icc_5_control$variance_components |> filter(component == "stimuli") |> pull(percentage)`,
+stimuli-by-participant interactions
+contributing `r icc_5_control$variance_components |> filter(component == "stimuli:participant") |> pull(percentage)`,
+time contributing `r icc_5_control$variance_components |> filter(component == "time") |> pull(percentage)`,
+time-by-participant interactions contributing `r icc_5_control$variance_components |> filter(component == "time:participant") |> pull(percentage)`,
+time-by-stimuli interactions contributing `r icc_5_control$variance_components |> filter(component == "time:stimuli") |> pull(percentage)`,
+and residual error accounting
+for `r icc_5_control$variance_components |> filter(component == "residual") |> pull(percentage)`.
+The substantially larger stimuli-by-participant interaction variance
+provides a clear reason for the large reduction in reliability between IWA and HCP when evaluating reliability across stimuli: the relative ranks of scores shift substantially between stimuli for HCP and there is poorer internal consistency across this battery of core-lexicon stimuli.
+
+When analyzing all participants together (collapsed across groups), the
+overall reliability was good (dependability coefficient = `r icc_5$icc_results$icc |> round(2)`, 95% CI
+\[`r icc_5$icc_results$ci_lower |> round(2)`, `r icc_5$icc_results$ci_upper |> round(2)`\]).
+When group differences were statistically controlled by
+including diagnosis as a fixed effect, reliability decreased to
+`r icc_5_dx$icc_results$icc |> round(2)` (95% CI
+\[`r icc_5_dx$icc_results$ci_lower |> round(2)`, `r icc_5_dx$icc_results$ci_upper |> round(2)`\]).
+This modest `r round((icc_5$icc_results$icc - icc_5_dx$icc_results$icc) * 100, 1)`-percentage-point
+decrease suggests that the majority of between-person variance in the collapsed model reflects individual differences within groups rather than systematic differences between groups. In other words, this result supports the use of the measure in studies that include both individuals with aphasia and healthy controls, as reliability estimates remain stable when group differences are accounted for.
+
+Estimating the effects of averaging stimuli scores (Decision Study)
+
+We conducted a decision study to examine the effects of averaging scores across stimuli. Results are visualized in Figure 2. For individuals with aphasia, single-stimulus reliability was excellent (`r round(ds$phi_coefficient[ds$n_stimuli == 1 & ds$group == "pwa"], 2)`, 95% CI `r ds$ci_95[ds$n_stimuli == 1 & ds$group == "pwa"]`), and increased modestly with two or more stimuli (`r round(ds$phi_coefficient[ds$n_stimuli == 2 & ds$group == "pwa"], 2)`, 95% CI `r ds$ci_95[ds$n_stimuli == 2 & ds$group == "pwa"]`). In contrast, healthy controls showed substantial improvements in reliability from additional stimuli, with moderate single-stimulus reliability (`r round(ds$phi_coefficient[ds$n_stimuli == 1 & ds$group == "control"], 2)`, 95% CI `r ds$ci_95[ds$n_stimuli == 1 & ds$group == "control"]`) but reaching good reliability only when averaging across two (`r round(ds$phi_coefficient[ds$n_stimuli == 2 & ds$group == "control"], 2)`, 95% CI `r ds$ci_95[ds$n_stimuli == 2 & ds$group == "control"]`) and three stimuli (`r round(ds$phi_coefficient[ds$n_stimuli == 3 & ds$group == "control"], 2)`, 95% CI `r ds$ci_95[ds$n_stimuli == 3 & ds$group == "control"]`). These findings suggest that while single stimuli may be sufficient for reliable measurement in individuals with aphasia, assessments of healthy controls may require multiple stimuli to achieve adequate reliability for clinical or research purposes. 
+
+[Figure 2 about here]
+
+Minimal Detectable Change (MDC)
+
+To provide statistical benchmarks for interpreting individual change scores, we calculated minimal detectable change (MDC95) values for each stimulus within each group by baseline performance. Due to the binomial modeling approach and logistic link function, MDC95 values vary as a function of baseline performance, with larger absolute changes required in the middle of the scale and smaller changes at the extremes. This non-linear effect is advantageous as a 10-item improvement for someone with 0/35 items correct at baseline is likely to be considered having improved more than an individual who improved from 10/35 to 20/35 items. For stimulus-specific administration (using the same stimulus across timepoints), MDC95 values for individuals with aphasia ranged from `r min(mdc_all$mdc[mdc_all$dx == "pwa"])` to `r max(mdc_all$mdc[mdc_all$dx == "pwa"])` items depending on the stimulus and baseline performance level, representing `r round(min(mdc_all$mdc_percentage[mdc_all$dx == "pwa"]) * 100, 1)`% to `r round(max(mdc_all$mdc_percentage[mdc_all$dx == "pwa"]) * 100, 1)`% of the maximum possible score. For example, when administering the Cat stimulus to an individual with aphasia, a patient who initially produced `r mdc_all |> filter(stimuli == "Cat", dx == "pwa", stratum == 1) |> pull(score_range)` items would need to improve by at least `r mdc_all |> filter(stimuli == "Cat", dx == "pwa", stratum == 1) |> pull(mdc)` items to exceed measurement error, whereas a patient starting at `r mdc_all |> filter(stimuli == "Cat", dx == "pwa", stratum == 3) |> pull(score_range)` items would need to improve by `r mdc_all |> filter(stimuli == "Cat", dx == "pwa", stratum == 3) |> pull(mdc)` items. These thresholds represent the minimum change that can be confidently attributed to true change rather than measurement variability, and are essential for determining whether an individual patient has made clinically meaningful progress. A full table of MDC95 thresholds for a range of baseline scores for IWA and HCP for all stimuli is reported in the supplemental materials. Healthy controls showed similar MDC95 values, ranging from `r min(mdc_all$mdc[mdc_all$dx == "control"])` to `r max(mdc_all$mdc[mdc_all$dx == "control"])` items (`r round(min(mdc_all$mdc_percentage[mdc_all$dx == "control"]) * 100, 1)`% to `r round(max(mdc_all$mdc_percentage[mdc_all$dx == "control"]) * 100, 1)`% of maximum scores). Although healthy controls showed similar absolute MDC95 values to individuals with aphasia, this similarity reflects offsetting effects of poorer reliability (lower ICC) and smaller standard deviations due to restricted score variability; thus, the comparable MDC95 thresholds mask underlying differences in measurement precision between groups.
+```
